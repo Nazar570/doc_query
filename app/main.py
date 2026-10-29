@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.config import CONFIG_ID, MAX_DOCUMENTS, index_target
+from app.config import CONFIG_ID, MAX_DOCUMENTS
+from app.errors import ServiceError
 from app.schemas import AskResult, Chunk, DocumentSummary, Question, SearchResult, UploadResult
 from app.services import ingest, manifest, rag, store
 from app.services.embeddings import Embeddings
@@ -18,24 +19,34 @@ write_lock = Lock()
 embedding_lock = Lock()
 _embeddings = None
 logger = logging.getLogger(__name__)
+for name in ("pinecone._internal.http_client", "google_genai._api_client", "google_genai.models",
+             "httpx", "httpx2", "httpcore", "httpcore2"):
+    logging.getLogger(name).setLevel(logging.CRITICAL + 1)
 
 
 def get_embeddings():
     global _embeddings
     with embedding_lock:
         if _embeddings is None:
-            _embeddings = Embeddings()
+            try:
+                _embeddings = Embeddings()
+            except (OSError, RuntimeError):
+                raise ServiceError("embedding_load", "model_unavailable", 503,
+                                   "The embedding model is unavailable") from None
         return _embeddings
 
 
-def service_error():
-    logger.error("A required service or configuration is unavailable")
-    return HTTPException(status_code=503, detail="A required service or configuration is unavailable")
+@app.exception_handler(ServiceError)
+def service_error(request, exc):
+    logger.error("operation=%s code=%s status=%s", exc.operation, exc.code, exc.status_code)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.exception_handler(manifest.ManifestError)
 def manifest_error(request, exc):
-    return JSONResponse(status_code=409, content={"detail": str(exc)})
+    route = request.scope.get("route")
+    logger.error("operation=%s code=manifest_unavailable status=503", route.name if route else "manifest")
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 def document_result(entry, response, duplicate=False):
@@ -56,16 +67,16 @@ def refresh_entry(data, entry):
         manifest.save(data)
         return
     try:
-        target = index_target()
-        index = store.connect_index()
-        visible = store.wait_until_visible(index, entry["chunks"], target[1], entry["config_id"])
+        target = store.validate_configuration()
+        with store.connect_index("pinecone_visibility") as index:
+            visible = store.wait_until_visible(index, entry["chunks"], target[1], entry["config_id"])
     except store.StoredDataMismatch:
         entry.update(status="failed", error_code="stored_data_mismatch")
-    except Exception:
+        logger.error("operation=pinecone_visibility code=stored_data_mismatch status=503")
+    except ServiceError:
         entry["error_code"] = "visibility_check_failed"
-        logger.error("Document visibility check failed")
         manifest.save(data)
-        raise service_error() from None
+        raise
     else:
         if visible:
             data.update(host=target[0], namespace=target[1])
@@ -105,59 +116,59 @@ def upload_document(response: Response, file: UploadFile = File(...)):
         active = sum(doc["status"] != "failed" for doc in documents.values())
         if active >= MAX_DOCUMENTS:
             raise HTTPException(status_code=400, detail="Document limit reached; failed imports do not reserve a slot")
-        try:
-            target = index_target()
-            index = store.connect_index()
-        except Exception as exc:
-            raise service_error() from exc
+        target = store.validate_configuration()
         data.update(host=target[0], namespace=target[1])
         entry = existing or {"source_id": source_id, "source": source, "status": "failed",
                              "chunk_count": 0, "chunks": [], "error_code": "embedding_failed",
                              "config_id": CONFIG_ID, "legacy": False}
         documents[source_id] = entry
-        if existing and entry["error_code"] in {"cleanup_failed", "write_interrupted"}:
+        with store.connect_index("pinecone_upload") as index:
+            if existing and entry["error_code"] in {"cleanup_failed", "write_interrupted"}:
+                try:
+                    store.cleanup_chunks(index, [c["id"] for c in entry["chunks"]], target[1])
+                except ServiceError:
+                    entry.update(status="failed", error_code="cleanup_failed")
+                    manifest.save(data)
+                    raise
             try:
-                store.cleanup_chunks(index, [c["id"] for c in entry["chunks"]], target[1])
-            except Exception:
-                entry.update(status="failed", error_code="cleanup_failed")
+                model = get_embeddings()
+                if not entry["chunks"]:
+                    pieces = ingest.split_document(text, model.model.tokenizer)
+                    entry["chunks"] = [
+                        {"id": f"{source_id}-{i}", "text": part, "source": entry["source"],
+                         "source_id": source_id, "chunk_index": i,
+                         "token_count": len(model.model.tokenizer.encode(part, add_special_tokens=False))}
+                        for i, part in enumerate(pieces)
+                    ]
+                    entry["chunk_count"] = len(entry["chunks"])
+                if not entry["chunks"]:
+                    raise ValueError("Document contains no chunks")
+                vectors = model.passages([c["text"] for c in entry["chunks"]])
+            except (OSError, RuntimeError, ValueError, ServiceError):
+                entry.update(status="failed", error_code="embedding_failed")
                 manifest.save(data)
-                return document_result(entry, response)
-        try:
-            model = get_embeddings()
-            if not entry["chunks"]:
-                pieces = ingest.split_document(text, model.model.tokenizer)
-                entry["chunks"] = [
-                    {"id": f"{source_id}-{i}", "text": part, "source": entry["source"],
-                     "source_id": source_id, "chunk_index": i,
-                     "token_count": len(model.model.tokenizer.encode(part, add_special_tokens=False))}
-                    for i, part in enumerate(pieces)
-                ]
-                entry["chunk_count"] = len(entry["chunks"])
-            if not entry["chunks"]:
-                raise ValueError("Document contains no chunks")
-            vectors = model.passages([c["text"] for c in entry["chunks"]])
-        except Exception:
-            entry.update(status="failed", error_code="embedding_failed")
+                logger.error("operation=embedding_passages code=embedding_failed status=503")
+                raise ServiceError("embedding_passages", "embedding_failed", 503,
+                                   "The document could not be embedded") from None
+            entry.update(status="indexing", error_code="write_interrupted")
             manifest.save(data)
-            return document_result(entry, response)
-        entry.update(status="indexing", error_code="write_interrupted")
-        manifest.save(data)
-        try:
-            store.write_chunks(index, entry["chunks"], vectors, target[1])
-        except store.ChunkWriteError:
-            entry.update(status="failed", error_code="upsert_failed")
             try:
-                store.cleanup_chunks(index, [c["id"] for c in entry["chunks"]], target[1])
-            except Exception:
-                entry["error_code"] = "cleanup_failed"
+                store.write_chunks(index, entry["chunks"], vectors, target[1])
+            except store.ChunkWriteError as exc:
+                entry.update(status="failed", error_code="upsert_failed")
+                try:
+                    store.cleanup_chunks(index, [c["id"] for c in entry["chunks"]], target[1])
+                except ServiceError:
+                    entry["error_code"] = "cleanup_failed"
+                    logger.error("operation=pinecone_cleanup code=cleanup_failed status=503")
+                manifest.save(data)
+                raise exc.error from None
+            except (ValueError, TypeError):
+                entry.update(status="failed", error_code="embedding_failed")
+                manifest.save(data)
+                raise
+            entry["error_code"] = None
             manifest.save(data)
-            return document_result(entry, response)
-        except (ValueError, TypeError):
-            entry.update(status="failed", error_code="embedding_failed")
-            manifest.save(data)
-            return document_result(entry, response)
-        entry["error_code"] = None
-        manifest.save(data)
         refresh_entry(data, entry)
         return document_result(entry, response)
 
@@ -187,15 +198,17 @@ def refresh_document(source_id: str, response: Response):
 
 
 def search_question(request: Question):
+    store.validate_configuration()
     data = manifest.load()
+    ready_sources = {key: doc for key, doc in data["documents"].items() if doc["status"] == "ready"}
+    if not ready_sources:
+        return []
     try:
-        index = store.connect_index()
         vector = get_embeddings().query(request.question)
-        found = store.search(index, vector, request.k)
-        ready = {key for key, doc in data["documents"].items() if doc["status"] == "ready"}
-        return [chunk for chunk in found if chunk["source_id"] in ready]
-    except Exception as exc:
-        raise service_error() from exc
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Question exceeds the embedding input limit") from None
+    with store.connect_index("pinecone_search", retries=1) as index:
+        return store.search(index, vector, request.k, ready_sources)
 
 
 @app.post("/search", response_model=SearchResult)
@@ -206,8 +219,5 @@ def search(request: Question):
 @app.post("/ask", response_model=AskResult)
 def ask(request: Question):
     matches = search_question(request)
-    try:
-        answer = rag.generate_answer(request.question, matches)
-    except Exception as exc:
-        raise service_error() from exc
+    answer = rag.generate_answer(request.question, matches)
     return {"answer": answer.model_dump(), "matches": matches}

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.config import CHUNK_SIZE
 
@@ -34,6 +34,13 @@ class SearchMatch(BaseModel):
     chunk_index: int = Field(ge=0)
     score: float = Field(allow_inf_nan=False)
 
+    @field_validator("id", "text", "source")
+    @classmethod
+    def field_not_blank(cls, value):
+        if not value.strip():
+            raise ValueError("Document fields must not be blank")
+        return value
+
 
 ErrorCode = Literal[
     "legacy_unverified", "write_interrupted", "embedding_failed", "upsert_failed",
@@ -54,6 +61,7 @@ class UploadResult(DocumentSummary):
 
 
 class Answer(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
     answer: str = Field(min_length=1)
     insufficient_evidence: bool
     citations: list[str]

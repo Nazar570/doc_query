@@ -1,16 +1,24 @@
 import math
+import logging
 import os
 import time
+from contextlib import contextmanager
+from importlib.metadata import version
 
 from pinecone import DenseVectorQuery, Pinecone, RetryConfig
+from pinecone.errors import ApiError, PineconeConnectionError, PineconeTimeoutError, ResponseParsingError
+from pydantic import ValidationError
 
 from app.config import CONFIG_ID, EMBEDDING_DIMENSION, EMBEDDING_FIELD, index_target
+from app.errors import ServiceError
+from app.schemas import SearchMatch
 
 
 BATCH_SIZE = 50
 REQUEST_TIMEOUT = 5.0
 VISIBILITY_ATTEMPTS = 4
 HTTP_TIMEOUT_PHASES = 4
+logger = logging.getLogger(__name__)
 
 
 class StoredDataMismatch(Exception):
@@ -18,16 +26,48 @@ class StoredDataMismatch(Exception):
 
 
 class ChunkWriteError(Exception):
-    pass
+    def __init__(self, error):
+        self.error = error
+        super().__init__(error.detail)
 
 
-def connect_index():
-    host, _ = index_target()
-    api_key = os.environ.get("PINECONE_API_KEY")
+def validate_configuration():
+    try:
+        target = index_target()
+    except ValueError:
+        raise ServiceError("pinecone_configuration", "invalid_configuration", 503,
+                           "Pinecone target configuration is missing or invalid") from None
+    api_key = os.environ.get("PINECONE_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("Pinecone configuration is missing")
-    return Pinecone(api_key=api_key, timeout=REQUEST_TIMEOUT,
-                    retry_config=RetryConfig(max_retries=0)).Index(host=host)
+        raise ServiceError("pinecone_configuration", "missing_configuration", 503,
+                           "Pinecone API key is missing")
+    return target
+
+
+def provider_error(exc, operation):
+    status = exc.status_code if isinstance(exc, ApiError) else None
+    if isinstance(exc, TimeoutError) or status in {408, 504}:
+        return ServiceError(operation, "timeout", 504, "Pinecone request timed out")
+    if isinstance(exc, ResponseParsingError):
+        return ServiceError(operation, "invalid_response", 502, "Pinecone returned invalid data")
+    code = f"http_{status}" if status is not None else "connection_failed"
+    return ServiceError(operation, code, 503, "Pinecone is unavailable or its configuration was rejected")
+
+
+@contextmanager
+def connect_index(operation="pinecone_documents", retries=0):
+    host, _ = validate_configuration()
+    if version("pinecone") != "10.2.0":
+        raise ServiceError(operation, "unsupported_sdk", 503,
+                           "The installed Pinecone SDK retry configuration must be verified")
+    try:
+        with Pinecone(api_key=os.environ["PINECONE_API_KEY"].strip(), timeout=REQUEST_TIMEOUT,
+                      retry_config=RetryConfig(max_retries=retries, max_wait=1.0)) as client:
+            with client.Index(host=host) as index:
+                index._http._client._transport._config = RetryConfig(max_retries=retries, max_wait=1.0)
+                yield index
+    except (ApiError, PineconeConnectionError, PineconeTimeoutError, ResponseParsingError) as exc:
+        raise provider_error(exc, operation) from None
 
 
 def write_chunks(index, chunks, vectors, namespace):
@@ -44,14 +84,18 @@ def write_chunks(index, chunks, vectors, namespace):
         try:
             response = index.documents.upsert(namespace=namespace, documents=batch, timeout=REQUEST_TIMEOUT)
             if response.upserted_count != len(batch):
-                raise RuntimeError("Pinecone did not accept the complete batch")
-        except Exception as exc:
-            raise ChunkWriteError() from exc
+                raise ChunkWriteError(ServiceError("pinecone_upsert", "incomplete_write", 502,
+                                                   "Pinecone did not accept the complete batch"))
+        except (ApiError, PineconeConnectionError, PineconeTimeoutError, ResponseParsingError) as exc:
+            raise ChunkWriteError(provider_error(exc, "pinecone_upsert")) from None
 
 
 def cleanup_chunks(index, ids, namespace):
     for start in range(0, len(ids), BATCH_SIZE):
-        index.documents.delete(namespace=namespace, ids=ids[start:start + BATCH_SIZE], timeout=REQUEST_TIMEOUT)
+        try:
+            index.documents.delete(namespace=namespace, ids=ids[start:start + BATCH_SIZE], timeout=REQUEST_TIMEOUT)
+        except (ApiError, PineconeConnectionError, PineconeTimeoutError, ResponseParsingError) as exc:
+            raise provider_error(exc, "pinecone_cleanup") from None
 
 
 def wait_until_visible(index, chunks, namespace, config_id=CONFIG_ID, timeout=20):
@@ -76,14 +120,15 @@ def wait_until_visible(index, chunks, namespace, config_id=CONFIG_ID, timeout=20
             except TimeoutError:
                 return False
             for document in response.documents.values():
-                if document.id not in batch:
+                document_id = document.get("_id")
+                if document_id not in batch:
                     raise StoredDataMismatch()
-                chunk = expected[document.id]
+                chunk = expected[document_id]
                 if (document.get("config") != config_id
                         or any(document.get(key) != chunk[key] for key in
                                ("text", "source", "source_id", "chunk_index", "token_count"))):
                     raise StoredDataMismatch()
-                found.add(document.id)
+                found.add(document_id)
         if found == set(expected):
             return time.monotonic() <= deadline
         remaining = deadline - time.monotonic()
@@ -94,15 +139,42 @@ def wait_until_visible(index, chunks, namespace, config_id=CONFIG_ID, timeout=20
     return False
 
 
-def search(index, vector: list[float], k: int = 4):
+def search(index, vector: list[float], k: int, ready_sources: dict):
     if not 1 <= k <= 8:
         raise ValueError("k must be between 1 and 8")
     _, namespace = index_target()
+    if not ready_sources:
+        return []
     response = index.documents.search(
         namespace=namespace, top_k=k,
+        filter={"source_id": {"$in": list(ready_sources)}},
         score_by=[DenseVectorQuery(field=EMBEDDING_FIELD, values=vector)],
-        include_fields=["text", "source", "source_id", "chunk_index"],
+        include_fields=["text", "source", "source_id", "chunk_index", "config"],
+        timeout=REQUEST_TIMEOUT,
     )
-    return [{"id": doc.id, "score": doc.score, "text": doc.text, "source": doc.source,
-             "source_id": doc.source_id, "chunk_index": doc.chunk_index}
-            for doc in response.matches]
+    matches = []
+    seen = set()
+    for doc in response.matches:
+        fields = {key: doc.get(key) for key in ("text", "source", "source_id", "chunk_index")}
+        chunk_index = fields["chunk_index"]
+        if isinstance(chunk_index, float) and math.isfinite(chunk_index) and chunk_index.is_integer():
+            fields["chunk_index"] = int(chunk_index)
+        try:
+            match = SearchMatch.model_validate({"id": doc.get("_id"), "score": doc.get("_score"), **fields}, strict=True)
+        except ValidationError as exc:
+            failures = ",".join(f"{error['loc'][0]}:{error['type']}" for error in exc.errors())
+            logger.error("operation=pinecone_search code=invalid_record fields=%s status=502", failures)
+            raise ServiceError("pinecone_search", "invalid_record", 502,
+                               "Pinecone returned an incomplete or invalid document record") from None
+        entry = ready_sources.get(match.source_id)
+        if (entry is None or doc.get("config") != entry["config_id"]
+                or match.chunk_index >= len(entry["chunks"]) or match.id in seen):
+            raise ServiceError("pinecone_search", "incompatible_record", 502,
+                               "Pinecone returned a document incompatible with the ready manifest")
+        expected = entry["chunks"][match.chunk_index]
+        if any(getattr(match, key) != expected[key] for key in ("id", "text", "source", "source_id", "chunk_index")):
+            raise ServiceError("pinecone_search", "mismatched_record", 502,
+                               "Pinecone returned a document that differs from the ready manifest")
+        seen.add(match.id)
+        matches.append(match.model_dump())
+    return matches
