@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DocQuery</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #20242b; }
+    section { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    input, textarea, button { font: inherit; margin: .3rem 0; }
+    textarea { width: 100%; box-sizing: border-box; }
+    button { cursor: pointer; padding: .4rem .8rem; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    details { margin: .8rem 0; }
+    .error { color: #a11; }
+  </style>
+</head>
+<body>
+  <h1>DocQuery</h1>
+  <p>Use public or fictional documents only. Text, metadata and vectors are sent to Pinecone. Questions and selected fragments are sent to Gemini when you request an answer.</p>
+  <section>
+    <h2>Documents</h2>
+    <form id="upload"><input id="file" type="file" accept=".txt,.md" required><button>Upload</button></form>
+    <div id="documents"></div>
+  </section>
+  <section>
+    <h2>Question</h2>
+    <textarea id="question" maxlength="2000" rows="3" placeholder="Ask a question"></textarea>
+    <div><button id="search" type="button">Search</button> <button id="ask" type="button">Answer</button></div>
+    <p id="status" role="status"></p>
+    <div id="answer"></div>
+    <div id="results"></div>
+  </section>
+  <script>
+    const status = document.querySelector('#status');
+    async function request(url, options) {
+      const response = await fetch(url, options);
+      const body = await response.json();
+      if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Invalid request');
+      return body;
+    }
+    function showChunks(target, chunks) {
+      target.replaceChildren();
+      for (const chunk of chunks) {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = `${chunk.source} · ${chunk.id}` + (chunk.score === undefined ? ` · ${chunk.token_count} tokens` : ` · cosine similarity ${chunk.score}`);
+        const text = document.createElement('pre');
+        text.textContent = chunk.text;
+        details.append(summary, text);
+        target.append(details);
+      }
+    }
+    async function refreshDocuments() {
+      const target = document.querySelector('#documents');
+      target.replaceChildren();
+      for (const doc of await request('/documents')) {
+        const section = document.createElement('div');
+        const button = document.createElement('button');
+        button.textContent = `${doc.source} (${doc.source_id.slice(0, 8)}) · ${doc.status} · ${doc.chunk_count} chunks`;
+        const chunks = document.createElement('div');
+        button.onclick = async () => {
+          try { showChunks(chunks, await request(`/documents/${doc.source_id}/chunks`)); }
+          catch (error) { status.textContent = error.message; }
+        };
+        section.append(button, chunks);
+        target.append(section);
+      }
+    }
+    document.querySelector('#upload').onsubmit = async event => {
+      event.preventDefault();
+      status.textContent = 'Uploading and indexing…';
+      const form = new FormData();
+      form.append('file', document.querySelector('#file').files[0]);
+      try {
+        const doc = await request('/documents', {method: 'POST', body: form});
+        status.textContent = doc.status === 'ready' ? 'Document ready.' : 'Indexing is pending. Upload the same file again to check it.';
+        await refreshDocuments();
+      } catch (error) { status.textContent = error.message; }
+    };
+    async function run(path) {
+      status.textContent = 'Working…';
+      document.querySelector('#answer').replaceChildren();
+      document.querySelector('#results').replaceChildren();
+      try {
+        const data = await request(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: document.querySelector('#question').value, k: 4})});
+        if (data.answer) {
+          const answer = document.querySelector('#answer');
+          const text = document.createElement('p');
+          text.textContent = data.answer.answer;
+          const citations = document.createElement('p');
+          citations.textContent = `Cited chunks: ${data.answer.citations.join(', ') || 'none'}`;
+          answer.append(text, citations);
+        }
+        showChunks(document.querySelector('#results'), data.matches);
+        status.textContent = `${data.matches.length} results. Higher cosine similarity means more similar, not more likely to be correct.`;
+      } catch (error) { status.textContent = error.message; }
+    }
+    document.querySelector('#search').onclick = () => run('/search');
+    document.querySelector('#ask').onclick = () => run('/ask');
+    refreshDocuments().catch(error => { status.textContent = error.message; });
+  </script>
+</body>
+</html>
