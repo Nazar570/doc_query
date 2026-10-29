@@ -4,7 +4,7 @@ from hashlib import sha256
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-MAX_FILE_BYTES = 1024 * 1024
+from app.config import CHUNK_OVERLAP, CHUNK_SIZE, MAX_FILE_BYTES
 
 
 def document_id(content: bytes) -> str:
@@ -16,13 +16,13 @@ def split_document(text: str, tokenizer) -> list[str]:
         return len(tokenizer.encode(value, add_special_tokens=False))
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=320,
-        chunk_overlap=48,
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
         length_function=token_count,
     )
     chunks = splitter.split_text(text)
-    if any(token_count(chunk) > 320 for chunk in chunks):
-        raise ValueError("Chunk exceeds the limit of 320 tokens")
+    if any(token_count(chunk) > CHUNK_SIZE for chunk in chunks):
+        raise ValueError(f"Chunk exceeds the limit of {CHUNK_SIZE} tokens")
     return chunks
 
 
@@ -43,12 +43,14 @@ def prepare_document(filename: str, content: bytes) -> str:
     fence = None
     blank_lines = 0
     for line in text.splitlines(keepends=True):
-        marker = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})([^\n]*)", line)
         if marker:
             token = marker.group(1)
-            if fence is None:
+            tail = marker.group(2)
+            if fence is None and (token[0] != "`" or "`" not in tail):
                 fence = token
-            elif token[0] == fence[0] and len(token) >= len(fence):
+            elif (fence is not None and token[0] == fence[0]
+                  and len(token) >= len(fence) and not tail.strip(" \t")):
                 fence = None
             blank_lines = 0
             lines.append(line)

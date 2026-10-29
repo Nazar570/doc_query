@@ -2,13 +2,8 @@ import json
 import os
 
 from google import genai
-from pydantic import BaseModel
 
-
-class Answer(BaseModel):
-    answer: str
-    insufficient_evidence: bool
-    citations: list[str]
+from app.schemas import Answer
 
 
 def generate_answer(question: str, chunks: list[dict]) -> Answer:

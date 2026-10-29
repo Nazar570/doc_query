@@ -1,9 +1,11 @@
 from sentence_transformers import SentenceTransformer
 
+from app.config import MODEL_NAME, PROCESSING
+
 
 class Embeddings:
     def __init__(self):
-        self.model = SentenceTransformer("intfloat/multilingual-e5-small", device="cpu")
+        self.model = SentenceTransformer(MODEL_NAME, device="cpu")
 
     def _encode(self, texts: list[str], prefix: str) -> list[list[float]]:
         inputs = [prefix + text for text in texts]
@@ -16,9 +18,9 @@ class Embeddings:
         return self.model.encode(inputs, normalize_embeddings=True).tolist()
 
     def passages(self, texts: list[str]) -> list[list[float]]:
-        return self._encode(texts, "passage: ")
+        return self._encode(texts, PROCESSING["passage_prefix"])
 
     def query(self, text: str) -> list[float]:
         if not text.strip():
             raise ValueError("Question must not be empty")
-        return self._encode([text], "query: ")[0]
+        return self._encode([text], PROCESSING["query_prefix"])[0]

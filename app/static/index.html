@@ -20,6 +20,7 @@
   <p>Use public or fictional documents only. Text, metadata and vectors are sent to Pinecone. Questions and selected fragments are sent to Gemini when you request an answer.</p>
   <section>
     <h2>Documents</h2>
+    <p>The first use may take longer while the embedding model loads. The file limit is 1 MiB; it is not a limit on the entire multipart request.</p>
     <form id="upload"><input id="file" type="file" accept=".txt,.md" required><button>Upload</button></form>
     <div id="documents"></div>
   </section>
@@ -36,7 +37,7 @@
     async function request(url, options) {
       const response = await fetch(url, options);
       const body = await response.json();
-      if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Invalid request');
+      if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : body.error_code ? `Document import failed: ${body.error_code}. Check the document status before retrying.` : 'Invalid request');
       return body;
     }
     function showChunks(target, chunks) {
@@ -74,7 +75,7 @@
       form.append('file', document.querySelector('#file').files[0]);
       try {
         const doc = await request('/documents', {method: 'POST', body: form});
-        status.textContent = doc.status === 'ready' ? 'Document ready.' : 'Indexing is pending. Upload the same file again to check it.';
+        status.textContent = doc.status === 'ready' ? 'Document ready.' : 'Indexing is pending. Use POST /documents/{source_id}/refresh in /docs, or upload the same file again to check it.';
         await refreshDocuments();
       } catch (error) { status.textContent = error.message; }
     };
