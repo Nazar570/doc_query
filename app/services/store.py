@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from importlib.metadata import version
 
 from pinecone import DenseVectorQuery, Pinecone, RetryConfig
@@ -56,6 +57,8 @@ def provider_error(exc, operation):
 
 @contextmanager
 def connect_index(operation="pinecone_documents", retries=0):
+    if retries not in {0, 1}:
+        raise ValueError("Pinecone retries must be zero or one")
     host, _ = validate_configuration()
     if version("pinecone") != "10.2.0":
         raise ServiceError(operation, "unsupported_sdk", 503,
@@ -64,7 +67,15 @@ def connect_index(operation="pinecone_documents", retries=0):
         with Pinecone(api_key=os.environ["PINECONE_API_KEY"].strip(), timeout=REQUEST_TIMEOUT,
                       retry_config=RetryConfig(max_retries=retries, max_wait=1.0)) as client:
             with client.Index(host=host) as index:
-                index._http._client._transport._config = RetryConfig(max_retries=retries, max_wait=1.0)
+                http_client = getattr(getattr(index, "_http", None), "_client", None)
+                transport = getattr(http_client, "_transport", None)
+                retry_config = getattr(transport, "_config", None)
+                if (type(transport).__module__ != "pinecone._internal.http_client"
+                        or type(transport).__name__ != "_RetryTransport"
+                        or not isinstance(retry_config, RetryConfig)):
+                    raise ServiceError(operation, "unsupported_transport", 503,
+                                       "The Pinecone transport retry configuration must be verified")
+                transport._config = replace(retry_config, max_retries=retries, max_wait=1.0)
                 yield index
     except (ApiError, PineconeConnectionError, PineconeTimeoutError, ResponseParsingError) as exc:
         raise provider_error(exc, operation) from None
@@ -100,36 +111,32 @@ def cleanup_chunks(index, ids, namespace):
 
 def wait_until_visible(index, chunks, namespace, config_id=CONFIG_ID, timeout=20):
     deadline = time.monotonic() + timeout
-    expected = {chunk["id"]: chunk for chunk in chunks}
-    if not expected:
+    pending = {chunk["id"]: chunk for chunk in chunks}
+    if not pending:
         return False
     for attempt in range(VISIBILITY_ATTEMPTS):
-        found = set()
-        ids = list(expected)
+        ids = list(pending)
         for start in range(0, len(ids), BATCH_SIZE):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
             batch = ids[start:start + BATCH_SIZE]
-            try:
-                response = index.documents.fetch(
-                    namespace=namespace, ids=batch,
-                    include_fields=["text", "source", "source_id", "chunk_index", "token_count", "config"],
-                    timeout=min(REQUEST_TIMEOUT, remaining / HTTP_TIMEOUT_PHASES),
-                )
-            except TimeoutError:
-                return False
+            response = index.documents.fetch(
+                namespace=namespace, ids=batch,
+                include_fields=["text", "source", "source_id", "chunk_index", "token_count", "config"],
+                timeout=min(REQUEST_TIMEOUT, remaining / HTTP_TIMEOUT_PHASES),
+            )
             for document in response.documents.values():
                 document_id = document.get("_id")
-                if document_id not in batch:
+                if document_id not in batch or document_id not in pending:
                     raise StoredDataMismatch()
-                chunk = expected[document_id]
+                chunk = pending[document_id]
                 if (document.get("config") != config_id
                         or any(document.get(key) != chunk[key] for key in
                                ("text", "source", "source_id", "chunk_index", "token_count"))):
                     raise StoredDataMismatch()
-                found.add(document_id)
-        if found == set(expected):
+                del pending[document_id]
+        if not pending:
             return time.monotonic() <= deadline
         remaining = deadline - time.monotonic()
         if remaining <= 0:

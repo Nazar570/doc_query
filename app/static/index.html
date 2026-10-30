@@ -5,101 +5,430 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DocQuery</title>
   <style>
-    body { font: 16px system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #20242b; }
-    section { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
-    input, textarea, button { font: inherit; margin: .3rem 0; }
-    textarea { width: 100%; box-sizing: border-box; }
-    button { cursor: pointer; padding: .4rem .8rem; }
-    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-    details { margin: .8rem 0; }
-    .error { color: #a11; }
+    :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #24312f; background: #f7f8f6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 880px; margin: auto; padding: 48px 28px 80px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 2rem; letter-spacing: -.04em; margin-bottom: 6px; }
+    h2 { font-size: 1.2rem; letter-spacing: -.02em; margin: 0; }
+    h3 { font-size: 1rem; }
+    p { line-height: 1.55; }
+    .muted, .meta, .hint { color: #586963; }
+    .section { border-top: 1px solid #d8dfdb; margin-top: 36px; padding-top: 24px; }
+    .section-head, .actions, .document-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .section-head { margin-bottom: 18px; }
+    .stack { display: grid; gap: 14px; }
+    .field { display: grid; gap: 7px; }
+    label { font-size: .92rem; font-weight: 650; }
+    input[type="file"], select, textarea { width: 100%; border: 1px solid #aebdb5; border-radius: 7px; background: white; color: inherit; font: inherit; }
+    input[type="file"] { padding: 9px; }
+    input[type="file"]::file-selector-button { margin-right: 12px; border: 0; border-radius: 5px; background: #e7eeea; padding: 7px 11px; font: inherit; }
+    select { min-height: 43px; padding: 8px 10px; }
+    textarea { min-height: 96px; padding: 11px 12px; resize: vertical; line-height: 1.5; }
+    button { border: 1px solid #9eaea6; border-radius: 7px; padding: 9px 14px; background: white; color: #205348; font: inherit; font-weight: 650; cursor: pointer; }
+    button:hover:not(:disabled) { background: #edf3ef; }
+    button.primary { color: white; background: #245b4e; border-color: #245b4e; }
+    button.primary:hover:not(:disabled) { background: #194e42; }
+    button.link { border: 0; padding: 4px 0; background: transparent; text-decoration: underline; text-underline-offset: 3px; }
+    button:disabled, input:disabled, select:disabled, textarea:disabled { opacity: .58; cursor: not-allowed; }
+    :focus-visible { outline: 3px solid #b36b31; outline-offset: 3px; }
+    .actions { justify-content: flex-start; flex-wrap: wrap; }
+    .status { min-height: 1.5em; margin: 10px 0 0; font-size: .92rem; }
+    .status:empty { min-height: 0; margin: 0; }
+    .error { color: #94342c; font-weight: 600; }
+    .document { border-top: 1px solid #e0e5e1; padding: 16px 0; }
+    .document:first-child { border-top: 0; }
+    .document-name { font-weight: 650; overflow-wrap: anywhere; }
+    .meta { margin: 5px 0; font-size: .86rem; overflow-wrap: anywhere; }
+    .document-actions { display: flex; flex-shrink: 0; gap: 12px; }
+    .badge { display: inline-block; border-radius: 4px; padding: 3px 7px; background: #e6eeea; color: #245b4e; font-size: .75rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+    .badge.indexing { background: #f5edda; color: #785511; }
+    .badge.failed { background: #f6e5e1; color: #93352d; }
+    .document-note { margin: 10px 0 0; color: #72511b; font-size: .88rem; }
+    .chunks { margin-top: 14px; }
+    details.chunk { border-top: 1px solid #e0e5e1; padding: 12px 0; }
+    details.chunk:first-child { border-top: 0; }
+    details.chunk.cited { border-left: 3px solid #245b4e; padding-left: 12px; }
+    summary { cursor: pointer; line-height: 1.45; font-weight: 600; overflow-wrap: anywhere; }
+    summary:hover { color: #245b4e; }
+    .chunk-body { padding: 8px 0 0 20px; }
+    pre, .answer-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.55; }
+    .result { border-top: 1px solid #d8dfdb; margin-top: 26px; padding-top: 22px; }
+    .answer-box { margin: 20px 0; padding: 16px; border-left: 3px solid #245b4e; border-radius: 0 6px 6px 0; background: #edf3ef; }
+    .answer-box.refusal { border-color: #a46a2e; background: #f7eee6; }
+    .answer-box h3 { margin-bottom: 8px; }
+    .about { border-top: 1px solid #d8dfdb; margin-top: 42px; padding-top: 18px; }
+    .about p { margin: 12px 0 0; font-size: .88rem; }
+    [hidden] { display: none !important; }
+    @media (max-width: 640px) {
+      main { padding: 28px 18px 56px; }
+      .section { margin-top: 30px; }
+      .document-head { display: block; }
+      .document-actions { margin-top: 10px; }
+    }
   </style>
 </head>
 <body>
-  <h1>DocQuery</h1>
-  <p>Use public or fictional documents only. Text, metadata and vectors are sent to Pinecone. Questions and selected fragments are sent to Gemini when you request an answer.</p>
-  <section>
-    <h2>Documents</h2>
-    <p>The first use may take longer while the embedding model loads. The file limit is 1 MiB; it is not a limit on the entire multipart request.</p>
-    <form id="upload"><input id="file" type="file" accept=".txt,.md" required><button>Upload</button></form>
-    <div id="documents"></div>
-  </section>
-  <section>
-    <h2>Question</h2>
-    <textarea id="question" maxlength="2000" rows="3" placeholder="Ask a question"></textarea>
-    <div><button id="search" type="button">Search</button> <button id="ask" type="button">Answer</button></div>
-    <p id="status" role="status"></p>
-    <div id="answer"></div>
-    <div id="results"></div>
-  </section>
+  <main>
+    <header>
+      <h1>DocQuery</h1>
+      <p class="muted">Ask questions about your documents. Each question is independent.</p>
+    </header>
+    <section class="section" aria-labelledby="documents-heading">
+      <div class="section-head">
+        <h2 id="documents-heading">Documents</h2>
+        <button id="reload" class="link" type="button">Reload list</button>
+      </div>
+      <form id="upload" class="stack">
+        <div class="field">
+          <label for="file">Add a document</label>
+          <input id="file" type="file" accept=".txt,.md,.pdf" aria-describedby="file-hint" required>
+          <span id="file-hint" class="hint">UTF-8 TXT or MD, or a PDF with text on every page.</span>
+        </div>
+        <div class="actions"><button id="upload-button" class="primary" type="submit">Upload</button></div>
+      </form>
+      <p id="upload-status" class="status" role="status" aria-live="polite"></p>
+      <p id="documents-status" class="status" role="status" aria-live="polite"></p>
+      <div id="documents"></div>
+    </section>
+    <section class="section" aria-labelledby="question-heading">
+      <div class="section-head"><h2 id="question-heading">Question</h2></div>
+      <div class="stack">
+        <div class="field">
+          <label for="source">Search in</label>
+          <select id="source" aria-describedby="source-hint"><option value="">All ready documents</option></select>
+          <span id="source-hint" class="hint">Only ready documents can be selected.</span>
+        </div>
+        <div class="field">
+          <label for="question">Your question</label>
+          <textarea id="question" maxlength="2000" rows="3" aria-describedby="question-hint"></textarea>
+          <span id="question-hint" class="hint">Up to 2,000 characters. Search shows matches; Answer may also ask Gemini.</span>
+        </div>
+        <div class="actions">
+          <button id="search" type="button">Search</button>
+          <button id="ask" class="primary" type="button">Answer</button>
+        </div>
+      </div>
+      <p id="query-status" class="status" role="status" aria-live="polite"></p>
+      <div id="result" class="result" hidden></div>
+    </section>
+    <details class="about">
+      <summary>Limits and data use</summary>
+      <p>Use public or fictional documents only. Each file can be up to 1 MiB; at most 10 documents can be active. PDFs must have text on every page, with at most 50 pages and 200,000 extracted characters. Scans and encrypted PDFs are unsupported. The first upload or search may take longer while the local embedding model loads.</p>
+      <p>Upload sends document text, metadata and vectors to Pinecone. Search sends a question vector to Pinecone. Answer also sends the question and selected fragments to Gemini. These actions may use paid services. Similarity scores describe vector similarity, not answer correctness. Check important claims against cited text.</p>
+    </details>
+  </main>
   <script>
-    const status = document.querySelector('#status');
-    async function request(url, options) {
+    const fileInput = document.querySelector('#file');
+    const sourceSelect = document.querySelector('#source');
+    const questionInput = document.querySelector('#question');
+    const documentList = document.querySelector('#documents');
+    const result = document.querySelector('#result');
+    const buttons = ['#reload', '#upload-button', '#search', '#ask'].map(id => document.querySelector(id));
+    let documents = [];
+    let busy = false;
+    let sequence = 0;
+
+    function status(id, message, error = false) {
+      const element = document.querySelector(id);
+      element.textContent = message;
+      element.classList.toggle('error', error);
+      element.setAttribute('role', error ? 'alert' : 'status');
+    }
+
+    function setBusy(value) {
+      busy = value;
+      for (const control of [...buttons, fileInput, sourceSelect, questionInput, ...documentList.querySelectorAll('button')]) control.disabled = value;
+      const noReady = !documents.some(doc => doc.status === 'ready');
+      document.querySelector('#search').disabled = value || noReady;
+      document.querySelector('#ask').disabled = value || noReady;
+      sourceSelect.disabled = value || noReady;
+    }
+
+    async function request(url, options = {}, allowFailedDocument = false) {
       const response = await fetch(url, options);
-      const body = await response.json();
-      if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : body.error_code ? `Document import failed: ${body.error_code}. Check the document status before retrying.` : 'Invalid request');
+      let body;
+      try { body = await response.json(); }
+      catch { throw new Error('Server returned an unreadable response (' + response.status + ').'); }
+      if (!response.ok && !(allowFailedDocument && body?.status === 'failed')) {
+        throw new Error((typeof body.detail === 'string' ? body.detail : 'Request failed') + ' (' + response.status + ').');
+      }
       return body;
     }
-    function showChunks(target, chunks) {
-      target.replaceChildren();
-      for (const chunk of chunks) {
-        const details = document.createElement('details');
-        const summary = document.createElement('summary');
-        summary.textContent = `${chunk.source} · ${chunk.id}` + (chunk.score === undefined ? ` · ${chunk.token_count} tokens` : ` · cosine similarity ${chunk.score}`);
-        const text = document.createElement('pre');
-        text.textContent = chunk.text;
-        details.append(summary, text);
-        target.append(details);
-      }
+
+    async function perform(task) {
+      if (busy) return;
+      const current = ++sequence;
+      setBusy(true);
+      try { await task(current); }
+      finally { if (current === sequence) setBusy(false); }
     }
-    async function refreshDocuments() {
-      const target = document.querySelector('#documents');
-      target.replaceChildren();
-      for (const doc of await request('/documents')) {
-        const section = document.createElement('div');
-        const button = document.createElement('button');
-        button.textContent = `${doc.source} (${doc.source_id.slice(0, 8)}) · ${doc.status} · ${doc.chunk_count} chunks`;
-        const chunks = document.createElement('div');
-        button.onclick = async () => {
-          try { showChunks(chunks, await request(`/documents/${doc.source_id}/chunks`)); }
-          catch (error) { status.textContent = error.message; }
-        };
-        section.append(button, chunks);
-        target.append(section);
-      }
+
+    function label(doc) { return doc.source + ' (' + doc.source_id.slice(0, 8) + ')'; }
+
+    function updateSources() {
+      const selected = sourceSelect.value;
+      sourceSelect.replaceChildren(new Option('All ready documents', ''));
+      for (const doc of documents.filter(item => item.status === 'ready')) sourceSelect.add(new Option(label(doc), doc.source_id));
+      sourceSelect.value = [...sourceSelect.options].some(option => option.value === selected) ? selected : '';
     }
-    document.querySelector('#upload').onsubmit = async event => {
-      event.preventDefault();
-      status.textContent = 'Uploading and indexing…';
-      const form = new FormData();
-      form.append('file', document.querySelector('#file').files[0]);
-      try {
-        const doc = await request('/documents', {method: 'POST', body: form});
-        status.textContent = doc.status === 'ready' ? 'Document ready.' : 'Indexing is pending. Use POST /documents/{source_id}/refresh in /docs, or upload the same file again to check it.';
-        await refreshDocuments();
-      } catch (error) { status.textContent = error.message; }
-    };
-    async function run(path) {
-      status.textContent = 'Working…';
-      document.querySelector('#answer').replaceChildren();
-      document.querySelector('#results').replaceChildren();
-      try {
-        const data = await request(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: document.querySelector('#question').value, k: 4})});
-        if (data.answer) {
-          const answer = document.querySelector('#answer');
-          const text = document.createElement('p');
-          text.textContent = data.answer.answer;
-          const citations = document.createElement('p');
-          citations.textContent = `Cited chunks: ${data.answer.citations.join(', ') || 'none'}`;
-          answer.append(text, citations);
+
+    function makeChunk(chunk, cited = false) {
+      const details = document.createElement('details');
+      details.className = cited ? 'chunk cited' : 'chunk';
+      const summary = document.createElement('summary');
+      summary.textContent = chunk.source + ' · fragment ' + (Number.isInteger(chunk.chunk_index) ? chunk.chunk_index + 1 : '?');
+      if (cited) {
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = 'Cited';
+        summary.append(' ', badge);
+      }
+      const body = document.createElement('div');
+      body.className = 'chunk-body';
+      const meta = document.createElement('p');
+      meta.className = 'meta';
+      meta.textContent = 'ID ' + chunk.id + ' · ' + (chunk.token_count === undefined ? 'cosine similarity ' + Number(chunk.score).toFixed(3) : chunk.token_count + ' tokens');
+      const text = document.createElement('pre');
+      text.textContent = chunk.text;
+      body.append(meta, text);
+      details.append(summary, body);
+      details.open = cited;
+      return details;
+    }
+
+    function renderDocuments() {
+      documentList.replaceChildren();
+      updateSources();
+      if (!documents.some(doc => doc.status === 'ready')) {
+        status('#query-status', 'Add a ready document to search or answer.');
+      } else if (document.querySelector('#query-status').textContent === 'Add a ready document to search or answer.') {
+        status('#query-status', '');
+      }
+      if (!documents.length) {
+        status('#documents-status', 'No documents yet. Add a TXT, MD or text-based PDF.');
+        return;
+      }
+      status('#documents-status', documents.length + ' document' + (documents.length === 1 ? '' : 's') + ' in the local list.');
+      for (const doc of documents) {
+        const row = document.createElement('article');
+        row.className = 'document';
+        const head = document.createElement('div');
+        head.className = 'document-head';
+        const info = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'document-name';
+        name.textContent = doc.source;
+        const meta = document.createElement('p');
+        meta.className = 'meta';
+        meta.textContent = 'ID ' + doc.source_id.slice(0, 8) + ' · ' + doc.chunk_count + ' fragment' + (doc.chunk_count === 1 ? '' : 's');
+        const badge = document.createElement('span');
+        badge.className = 'badge ' + doc.status;
+        badge.textContent = doc.status;
+        info.append(name, meta, badge);
+        const actions = document.createElement('div');
+        actions.className = 'document-actions';
+        const view = document.createElement('button');
+        view.className = 'link';
+        view.type = 'button';
+        view.textContent = 'View fragments';
+        view.disabled = busy;
+        view.setAttribute('aria-expanded', 'false');
+        const panel = document.createElement('div');
+        panel.className = 'chunks';
+        panel.id = 'chunks-' + doc.source_id;
+        panel.hidden = true;
+        view.setAttribute('aria-controls', panel.id);
+        view.onclick = () => viewChunks(doc, view, panel);
+        actions.append(view);
+        if (doc.status === 'indexing') {
+          const refresh = document.createElement('button');
+          refresh.className = 'link';
+          refresh.type = 'button';
+          refresh.textContent = 'Refresh status';
+          refresh.disabled = busy;
+          refresh.onclick = () => refreshDocument(doc);
+          actions.append(refresh);
         }
-        showChunks(document.querySelector('#results'), data.matches);
-        status.textContent = `${data.matches.length} results. Higher cosine similarity means more similar, not more likely to be correct.`;
-      } catch (error) { status.textContent = error.message; }
+        head.append(info, actions);
+        row.append(head);
+        if (doc.status !== 'ready') {
+          const note = document.createElement('p');
+          note.className = 'document-note';
+          note.textContent = doc.status === 'indexing' ? 'Not searchable yet. Refresh status to check again.' :
+            'Import failed' + (doc.error_code ? ' (' + doc.error_code + ')' : '') + '. Reupload the same file to retry. It is not searchable.';
+          row.append(note);
+        }
+        row.append(panel);
+        documentList.append(row);
+      }
     }
-    document.querySelector('#search').onclick = () => run('/search');
-    document.querySelector('#ask').onclick = () => run('/ask');
-    refreshDocuments().catch(error => { status.textContent = error.message; });
+
+    async function loadDocuments(current) {
+      status('#documents-status', 'Loading documents…');
+      const list = await request('/documents');
+      if (current !== sequence) return;
+      documents = list;
+      renderDocuments();
+    }
+
+    function viewChunks(doc, button, panel) {
+      if (!panel.hidden) {
+        panel.hidden = true;
+        button.setAttribute('aria-expanded', 'false');
+        return;
+      }
+      perform(async current => {
+        button.textContent = 'Loading…';
+        status('#documents-status', 'Loading fragments for ' + label(doc) + '…');
+        try {
+          const chunks = await request('/documents/' + doc.source_id + '/chunks');
+          if (current !== sequence) return;
+          panel.replaceChildren(...chunks.map(chunk => makeChunk(chunk)));
+          if (!chunks.length) {
+            const empty = document.createElement('p');
+            empty.textContent = 'No fragments stored for this document.';
+            panel.append(empty);
+          }
+          panel.hidden = false;
+          button.setAttribute('aria-expanded', 'true');
+          status('#documents-status', chunks.length + ' fragment' + (chunks.length === 1 ? '' : 's') + ' for ' + label(doc) + '.');
+        } catch (error) {
+          if (current === sequence) status('#documents-status', error.message, true);
+        } finally { button.textContent = 'View fragments'; }
+      });
+    }
+
+    function refreshDocument(doc) {
+      perform(async current => {
+        status('#documents-status', 'Checking ' + label(doc) + '…');
+        try {
+          const updated = await request('/documents/' + doc.source_id + '/refresh', {method: 'POST'}, true);
+          if (current !== sequence) return;
+          documents = documents.map(item => item.source_id === doc.source_id ? updated : item);
+          renderDocuments();
+          status('#documents-status', updated.status === 'ready' ? label(updated) + ' is ready.' :
+            updated.status === 'failed' ? label(updated) + ' failed. Reupload the same file to retry.' :
+              label(updated) + ' is still indexing. Refresh status later.', updated.status === 'failed');
+        } catch (error) {
+          if (current === sequence) status('#documents-status', error.message, true);
+        }
+      });
+    }
+
+    document.querySelector('#reload').onclick = () => perform(async current => {
+      try { await loadDocuments(current); }
+      catch (error) { if (current === sequence) status('#documents-status', error.message, true); }
+    });
+
+    document.querySelector('#upload').onsubmit = event => {
+      event.preventDefault();
+      if (!fileInput.files.length) {
+        status('#upload-status', 'Choose a file first.', true);
+        fileInput.focus();
+        return;
+      }
+      perform(async current => {
+        const form = new FormData();
+        form.append('file', fileInput.files[0]);
+        status('#upload-status', 'Uploading and indexing…');
+        try {
+          const uploaded = await request('/documents', {method: 'POST', body: form}, true);
+          if (current !== sequence) return;
+          fileInput.value = '';
+          status('#upload-status', uploaded.status === 'ready' ? label(uploaded) + ' is ready' + (uploaded.duplicate ? ' (already imported).' : '.') :
+            uploaded.status === 'indexing' ? label(uploaded) + ' is indexing. Use Refresh status on its row.' :
+              label(uploaded) + ' failed (' + (uploaded.error_code || 'unknown error') + '). Reupload the same file to retry.', uploaded.status === 'failed');
+          try { await loadDocuments(current); }
+          catch (error) { if (current === sequence) status('#documents-status', error.message, true); }
+        } catch (error) {
+          if (current === sequence) status('#upload-status', error.message, true);
+        }
+      });
+    };
+
+    function renderResult(mode, question, source, data) {
+      result.replaceChildren();
+      result.hidden = false;
+      const heading = document.createElement('h2');
+      heading.textContent = mode === 'ask' ? 'Answer' : 'Search results';
+      const context = document.createElement('p');
+      context.className = 'meta';
+      context.textContent = 'Question: ' + question + ' · Source: ' + source;
+      result.append(heading, context);
+      if (mode === 'ask') {
+        const box = document.createElement('section');
+        box.className = 'answer-box' + (data.answer.insufficient_evidence ? ' refusal' : '');
+        const title = document.createElement('h3');
+        title.textContent = data.answer.insufficient_evidence ? 'Insufficient evidence' : 'Response';
+        const answer = document.createElement('p');
+        answer.className = 'answer-text';
+        answer.textContent = data.answer.answer;
+        box.append(title, answer);
+        if (!data.answer.insufficient_evidence) {
+          const note = document.createElement('p');
+          note.className = 'meta';
+          note.textContent = data.answer.citations.length + ' cited fragment' + (data.answer.citations.length === 1 ? '' : 's') + ' marked below. Check whether they support the answer.';
+          box.append(note);
+        }
+        result.append(box);
+      }
+      const matches = document.createElement('h3');
+      matches.textContent = 'Matches (' + data.matches.length + ')';
+      result.append(matches);
+      const note = document.createElement('p');
+      note.className = 'meta';
+      note.textContent = 'All retrieved fragments are shown. Higher cosine similarity means more similar vectors, not a more reliable answer.';
+      result.append(note);
+      if (!data.matches.length) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.textContent = 'No matches found for this question and source.';
+        result.append(empty);
+        return;
+      }
+      const cited = new Set(data.answer?.citations || []);
+      const list = document.createElement('div');
+      list.className = 'chunks';
+      for (const match of data.matches) list.append(makeChunk(match, cited.has(match.id)));
+      result.append(list);
+    }
+
+    function run(mode) {
+      const question = questionInput.value.trim();
+      if (!question) {
+        status('#query-status', 'Enter a question first.', true);
+        questionInput.focus();
+        return;
+      }
+      const sourceId = sourceSelect.value;
+      const source = sourceId ? sourceSelect.selectedOptions[0].textContent : 'All ready documents';
+      perform(async current => {
+        result.hidden = true;
+        status('#query-status', mode === 'ask' ? 'Finding fragments and generating an answer…' : 'Searching ready documents…');
+        const payload = {question, k: 4};
+        if (sourceId) payload.source_id = sourceId;
+        try {
+          const data = await request(mode === 'ask' ? '/ask' : '/search', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+          });
+          if (current !== sequence) return;
+          renderResult(mode, question, source, data);
+          status('#query-status', mode === 'ask' && data.answer.insufficient_evidence ? 'Answer refused: insufficient evidence.' :
+            (mode === 'ask' ? 'Answer ready' : 'Search complete') + ' · ' + data.matches.length + ' matches.');
+        } catch (error) {
+          if (current === sequence) status('#query-status', error.message, true);
+        }
+      });
+    }
+
+    document.querySelector('#search').onclick = () => run('search');
+    document.querySelector('#ask').onclick = () => run('ask');
+    perform(async current => {
+      try { await loadDocuments(current); }
+      catch (error) { if (current === sequence) status('#documents-status', error.message, true); }
+    });
   </script>
 </body>
 </html>

@@ -5,7 +5,7 @@ from app.config import MODEL_NAME, PROCESSING
 
 class Embeddings:
     def __init__(self):
-        self.model = SentenceTransformer(MODEL_NAME, device="cpu")
+        self.model = SentenceTransformer(MODEL_NAME, device="cpu", local_files_only=True)
 
     def _encode(self, texts: list[str], prefix: str) -> list[list[float]]:
         inputs = [prefix + text for text in texts]

@@ -8,6 +8,7 @@ from app.config import CHUNK_SIZE
 class Question(BaseModel):
     question: str = Field(max_length=2000)
     k: int = Field(default=4, ge=1, le=8)
+    source_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
     @field_validator("question")
     @classmethod

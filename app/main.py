@@ -19,8 +19,13 @@ write_lock = Lock()
 embedding_lock = Lock()
 _embeddings = None
 logger = logging.getLogger(__name__)
+rag.logger.setLevel(logging.INFO)
+rag.logger.propagate = False
+rag_log_handler = logging.StreamHandler()
+rag_log_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+rag.logger.addHandler(rag_log_handler)
 for name in ("pinecone._internal.http_client", "google_genai._api_client", "google_genai.models",
-             "httpx", "httpx2", "httpcore", "httpcore2"):
+             "httpx", "httpx2", "httpcore", "httpcore2", "pypdf"):
     logging.getLogger(name).setLevel(logging.CRITICAL + 1)
 
 
@@ -30,7 +35,7 @@ def get_embeddings():
         if _embeddings is None:
             try:
                 _embeddings = Embeddings()
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, ValueError):
                 raise ServiceError("embedding_load", "model_unavailable", 503,
                                    "The embedding model is unavailable") from None
         return _embeddings
@@ -201,12 +206,21 @@ def search_question(request: Question):
     store.validate_configuration()
     data = manifest.load()
     ready_sources = {key: doc for key, doc in data["documents"].items() if doc["status"] == "ready"}
+    if request.source_id is not None:
+        if request.source_id not in data["documents"]:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if request.source_id not in ready_sources:
+            raise HTTPException(status_code=409, detail="Document is not ready for search")
+        ready_sources = {request.source_id: ready_sources[request.source_id]}
     if not ready_sources:
         return []
     try:
         vector = get_embeddings().query(request.question)
     except ValueError:
         raise HTTPException(status_code=400, detail="Question exceeds the embedding input limit") from None
+    except (OSError, RuntimeError):
+        raise ServiceError("embedding_query", "embedding_failed", 503,
+                           "The question could not be embedded") from None
     with store.connect_index("pinecone_search", retries=1) as index:
         return store.search(index, vector, request.k, ready_sources)
 
