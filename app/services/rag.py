@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import httpx
 from google import genai
+from google.genai import types
 from google.genai import errors
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_core import PydanticCustomError
@@ -169,18 +170,22 @@ def _generate_answer(question, chunks, generation_id):
         raise ServiceError("gemini_configuration", "invalid_attempts", 503,
                            "GEMINI_MAX_ATTEMPTS must be 1 or 2")
     try:
-        with genai.Client(api_key=api_key, http_options={
+        http_options: types.HttpOptionsDict = {
             "timeout": 30000,
             "retry_options": {"attempts": int(attempts), "initial_delay": 1.0, "max_delay": 1.0, "jitter": 0.0},
-        }) as client:
+        }
+        config: types.GenerateContentConfigDict = {
+            "system_instruction": SYSTEM_INSTRUCTION,
+            "automatic_continuation": False,
+            "automatic_function_calling": {"disable": True},
+            "max_output_tokens": MAX_OUTPUT_TOKENS,
+            "response_mime_type": "application/json",
+            "response_json_schema": GroundedResponse.model_json_schema(),
+        }
+        with genai.Client(api_key=api_key, http_options=http_options) as client:
             response = client.models.generate_content(
                 model=model, contents=contents,
-                config={"system_instruction": SYSTEM_INSTRUCTION,
-                        "automatic_continuation": False,
-                        "automatic_function_calling": {"disable": True},
-                        "max_output_tokens": MAX_OUTPUT_TOKENS,
-                        "response_mime_type": "application/json",
-                        "response_json_schema": GroundedResponse.model_json_schema()},
+                config=config,
             )
     except (httpx.TimeoutException, httpx2.TimeoutException):
         raise ServiceError("gemini_answer", "timeout", 504, "Gemini request timed out") from None
